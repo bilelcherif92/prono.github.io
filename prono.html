@@ -1,0 +1,303 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Pronostics — Tirage équitable (avec sauvegarde)</title>
+<style>
+  body { font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; margin: 24px; background:#fafafa; }
+  h1 { margin-bottom: 0.2rem; }
+  .card { border: 1px solid #e5e7eb; border-radius: 12px; padding: 16px; margin-bottom: 16px; background:white; box-shadow: 0 1px 3px rgba(0,0,0,.06); }
+  label { display:block; font-weight: 600; margin-bottom: 6px; }
+  input[type="text"], input[type="number"] { padding: 8px; border: 1px solid #d1d5db; border-radius: 8px; width: 100%; box-sizing: border-box; }
+  button { padding: 10px 14px; border: 0; border-radius: 10px; cursor: pointer; background: #111827; color: white; font-weight: 600; }
+  button.secondary { background: #374151; }
+  button.ghost { background: #eef2ff; color: #111827; }
+  table { width: 100%; border-collapse: collapse; }
+  th, td { border-bottom: 1px solid #e5e7eb; padding: 8px; text-align: left; }
+  th { background: #f3f4f6; }
+  .muted { color: #6b7280; }
+  .row { display:flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+  .col { flex: 1; min-width: 240px; }
+  .pill { display:inline-block; padding: 3px 8px; border-radius: 999px; font-size: 12px; background: #f3f4f6; }
+</style>
+</head>
+<body>
+  <h1>🎯 Pronostics — Tirage équitable</h1>
+  <p class="muted">Saisis les joueurs, choisis combien en tirer et clique “Tirer”. L’historique, les points et le classement sont <b>sauvegardés automatiquement</b> sur l’appareil.</p>
+
+  <div class="card">
+    <div class="row">
+      <div class="col">
+        <label>Joueurs (séparés par des virgules)</label>
+        <input id="players" type="text" value="kader, youss, Axel, Noty, Joueur5, Joueur6, Joueur7, Joueur8, Joueur9, Joueur10" />
+        <div class="muted" style="margin-top:6px;">Ex : Alice, Bob, Charly</div>
+      </div>
+      <div class="col" style="max-width:180px;">
+        <label>Nombre à tirer (1–3)</label>
+        <input id="count" type="number" min="1" max="3" step="1" value="2" />
+      </div>
+      <div class="col" style="max-width:380px;">
+        <label>&nbsp;</label>
+        <div class="row">
+          <button id="drawBtn">Tirer</button>
+          <button id="resetBtn" class="secondary">Réinitialiser</button>
+          <button id="exportBtn" class="ghost">Exporter CSV</button>
+          <input id="importFile" type="file" accept=".csv" style="display:none;">
+          <button id="importBtn" class="ghost">Importer CSV</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="row" style="align-items:center;">
+      <div class="col"><h3 style="margin:6px 0;">Résultat du tirage</h3></div>
+      <div class="col" style="text-align:right;">
+        <span class="pill"><span class="muted">Écart (max–min) : </span><span id="gapSpan">0</span></span>
+      </div>
+    </div>
+    <div id="results" style="font-size:18px; font-weight:700; margin-top:8px;"></div>
+  </div>
+
+  <div class="card">
+    <h3 style="margin:6px 0;">Historique</h3>
+    <table id="historyTable">
+      <thead>
+        <tr><th>Date/Heure</th><th>Joueur</th><th>Pari</th><th>Cote</th><th>Passe (Oui/Non)</th><th>Points</th></tr>
+      </thead>
+      <tbody></tbody>
+    </table>
+  </div>
+
+  <div class="card">
+    <h3 style="margin:6px 0;">Classement</h3>
+    <table id="boardTable">
+      <thead>
+        <tr><th>Joueur</th><th>Nb pronos</th><th>Total points</th><th>Taux de réussite</th><th>Moyenne cote gagnée</th></tr>
+      </thead>
+      <tbody></tbody>
+    </table>
+  </div>
+
+<script>
+(function(){
+  const LS_KEY = "prono_state_v1"; // clé de stockage local
+  const playersInput = document.getElementById('players');
+  const kInput = document.getElementById('count');
+  const drawBtn = document.getElementById('drawBtn');
+  const resetBtn = document.getElementById('resetBtn');
+  const exportBtn = document.getElementById('exportBtn');
+  const importBtn = document.getElementById('importBtn');
+  const importFile = document.getElementById('importFile');
+  const gapSpan = document.getElementById('gapSpan');
+  const results = document.getElementById('results');
+  const historyTBody = document.querySelector('#historyTable tbody');
+  const boardTBody = document.querySelector('#boardTable tbody');
+
+  let players = [];
+  let history = []; // [{ts, joueur, pari, cote, passe}]
+
+  // ---------- Sauvegarde / Restauration ----------
+  function save() {
+    const state = {
+      playersText: playersInput.value,
+      k: kInput.value,
+      history
+    };
+    try {
+      localStorage.setItem(LS_KEY, JSON.stringify(state));
+    } catch(e) {
+      console.warn("Sauvegarde non possible (quota ?)", e);
+    }
+  }
+  function load() {
+    try {
+      const data = localStorage.getItem(LS_KEY);
+      if (!data) return;
+      const state = JSON.parse(data);
+      if (state.playersText) playersInput.value = state.playersText;
+      if (state.k) kInput.value = state.k;
+      if (Array.isArray(state.history)) history = state.history;
+    } catch(e) {
+      console.warn("Restauration impossible", e);
+    }
+  }
+  function clearAll() {
+    if (!confirm("Tout effacer (historique + sauvegarde) ?")) return;
+    history = [];
+    results.textContent = "";
+    localStorage.removeItem(LS_KEY);
+    renderAll();
+  }
+
+  // ---------- Aides ----------
+  function parsePlayers() {
+    players = playersInput.value.split(',').map(s=>s.trim()).filter(Boolean);
+  }
+  function toNumber(x) {
+    if (x === null || x === undefined) return null;
+    const s = String(x).replace(',', '.').trim();
+    if (!s) return null;
+    const v = Number(s);
+    return isFinite(v) ? v : null;
+  }
+  function fmtTs(ts) {
+    return new Date(ts).toLocaleString();
+  }
+
+  // ---------- Tirage équitable ----------
+  function fairDraw(k) {
+    const counts = {};
+    players.forEach(p => counts[p]=0);
+    history.forEach(h => { if (counts.hasOwnProperty(h.joueur)) counts[h.joueur] += 1; });
+    // trie par nb de pronos (asc), puis hasard
+    const arr = players.map(p => ({p, c:counts[p], r:Math.random()}));
+    arr.sort((a,b)=> (a.c - b.c) || (a.r - b.r));
+    return arr.slice(0, k).map(x => x.p);
+  }
+
+  // ---------- Rendu ----------
+  function recomputeBoard() {
+    const counts = {};
+    const wins = {};
+    const sumWinCote = {};
+    players.forEach(p => { counts[p]=0; wins[p]=0; sumWinCote[p]=0; });
+    history.forEach(h => {
+      if (!counts.hasOwnProperty(h.joueur)) return;
+      counts[h.joueur] += 1;
+      const cote = toNumber(h.cote);
+      const passed = (String(h.passe||'').toLowerCase()==='oui');
+      if (passed && cote !== null) {
+        wins[h.joueur] += 1;
+        sumWinCote[h.joueur] += cote;
+      }
+    });
+    // tableau classement
+    const rows = players.map(p => {
+      const nb = counts[p]||0;
+      const win = wins[p]||0;
+      const taux = nb>0 ? (win/nb) : 0;
+      const avg = win>0 ? (sumWinCote[p]/win) : 0;
+      const total = sumWinCote[p]||0;
+      return {joueur:p, nb, total, taux, avg};
+    });
+    boardTBody.innerHTML = '';
+    rows.sort((a,b)=> b.total - a.total || b.taux - a.taux);
+    rows.forEach(r => {
+      const tr = document.createElement('tr');
+      tr.innerHTML = `<td>${r.joueur}</td>
+                      <td>${r.nb}</td>
+                      <td>${r.total.toFixed(2)}</td>
+                      <td>${(r.taux*100).toFixed(1)}%</td>
+                      <td>${r.avg.toFixed(2)}</td>`;
+      boardTBody.appendChild(tr);
+    });
+    // écart max-min
+    const vals = rows.map(r => r.nb);
+    gapSpan.textContent = vals.length ? (Math.max(...vals)-Math.min(...vals)) : 0;
+  }
+
+  function renderHistory() {
+    historyTBody.innerHTML = '';
+    const rows = [...history].sort((a,b)=> b.ts - a.ts).slice(0, 500);
+    rows.forEach(h => {
+      const tr = document.createElement('tr');
+      tr.innerHTML = `
+        <td>${fmtTs(h.ts)}</td>
+        <td>${h.joueur}</td>
+        <td contenteditable="true">${h.pari||''}</td>
+        <td contenteditable="true">${h.cote||''}</td>
+        <td>
+          <select>
+            <option value="" ${!h.passe?'selected':''}></option>
+            <option value="Oui" ${h.passe==='Oui'?'selected':''}>Oui</option>
+            <option value="Non" ${h.passe==='Non'?'selected':''}>Non</option>
+          </select>
+        </td>
+        <td>${(String(h.passe)==='Oui' && toNumber(h.cote)!==null)? toNumber(h.cote).toFixed(2): '0'}</td>`;
+      // listeners
+      const [tdPari, tdCote] = [tr.children[2], tr.children[3]];
+      const selPasse = tr.querySelector('select');
+      tdPari.addEventListener('input', ()=>{ h.pari = tdPari.innerText.trim(); save(); renderHistory(); recomputeBoard(); });
+      tdCote.addEventListener('input', ()=>{ h.cote = tdCote.innerText.trim(); save(); renderHistory(); recomputeBoard(); });
+      selPasse.addEventListener('change', ()=>{ h.passe = selPasse.value; save(); renderHistory(); recomputeBoard(); });
+      historyTBody.appendChild(tr);
+    });
+  }
+
+  function renderAll() {
+    parsePlayers();
+    renderHistory();
+    recomputeBoard();
+    save();
+  }
+
+  // ---------- Export / Import CSV (optionnel) ----------
+  function exportCSV() {
+    const head = ["DateTime","Joueur","Pari","Cote","Passe"];
+    const rows = history.map(h => [new Date(h.ts).toISOString(), h.joueur, h.pari||"", h.cote||"", h.passe||""]);
+    const csv = [head, ...rows].map(r => r.map(x => `"${String(x).replace(/"/g,'""')}"`).join(",")).join("\r\n");
+    const blob = new Blob([csv], {type:"text/csv;charset=utf-8;"});
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = "historique_pronostics.csv";
+    a.click();
+  }
+  function importCSV(file) {
+    const reader = new FileReader();
+    reader.onload = e => {
+      const text = e.target.result;
+      const lines = text.split(/\r?\n/).filter(l=>l.trim().length>0);
+      if (!lines.length) return;
+      const out = [];
+      for (let i=1;i<lines.length;i++) {
+        const row = parseCSVLine(lines[i]);
+        if (!row) continue;
+        const [iso, joueur, pari, cote, passe] = row;
+        const ts = Date.parse(iso) || Date.now();
+        out.push({ts, joueur, pari, cote, passe});
+      }
+      history = out;
+      renderAll();
+    };
+    reader.readAsText(file);
+  }
+  function parseCSVLine(line) {
+    const re = /"(?:[^"]|"")*"|[^,]+/g;
+    return (line.match(re) || []).map(s => {
+      s = s.trim();
+      if (s.startsWith('"') && s.endsWith('"')) s = s.slice(1,-1).replace(/""/g,'"');
+      return s;
+    });
+  }
+
+  // ---------- Événements ----------
+  drawBtn.addEventListener('click', () => {
+    parsePlayers();
+    let k = parseInt(kInput.value, 10);
+    if (!(k>=1 && k<=3)) k = 1;
+    if (players.length === 0) { alert("Ajoute des joueurs d'abord."); return; }
+    const chosen = fairDraw(Math.min(k, players.length));
+    results.textContent = chosen.join(' · ');
+    const ts = Date.now();
+    chosen.forEach(p => history.push({ts, joueur:p, pari:"", cote:"", passe:""}));
+    renderAll();
+  });
+  resetBtn.addEventListener('click', clearAll);
+  playersInput.addEventListener('input', renderAll);
+  kInput.addEventListener('input', renderAll);
+  exportBtn.addEventListener('click', exportCSV);
+  importBtn.addEventListener('click', ()=> importFile.click());
+  importFile.addEventListener('change', (e)=> {
+    if (e.target.files && e.target.files[0]) importCSV(e.target.files[0]);
+    importFile.value = "";
+  });
+
+  // ---------- Init ----------
+  load();
+  renderAll();
+})();
+</script>
+</body>
+</html>
