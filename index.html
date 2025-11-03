@@ -37,7 +37,7 @@
         <label>Nombre à tirer (1–3)</label>
         <input id="count" type="number" min="1" max="3" step="1" value="2" />
       </div>
-      <div class="col" style="max-width:380px;">
+      <div class="col" style="max-width:420px;">
         <label>&nbsp;</label>
         <div class="row">
           <button id="drawBtn">Tirer</button>
@@ -82,7 +82,7 @@
 
 <script>
 (function(){
-  const LS_KEY = "prono_state_v1"; // clé de stockage local
+  const LS_KEY = "prono_state_v3";
   const playersInput = document.getElementById('players');
   const kInput = document.getElementById('count');
   const drawBtn = document.getElementById('drawBtn');
@@ -98,30 +98,39 @@
   let players = [];
   let history = []; // [{ts, joueur, pari, cote, passe}]
 
+  // ---------- Helpers & validation cote ----------
+  function sanitizeCoteText(s) {
+    s = String(s).replace(/[^\d.,]/g, "");
+    const firstSep = s.search(/[.,]/);
+    if (firstSep !== -1) {
+      const head = s.slice(0, firstSep + 1);
+      const tail = s.slice(firstSep + 1).replace(/[.,]/g, "");
+      s = head + tail;
+    }
+    return s;
+  }
+  function parseCote(s) {
+    const v = Number(String(s).replace(",", "."));
+    return Number.isFinite(v) ? v : null;
+  }
+  function formatFR2(n) {
+    return n.toLocaleString("fr-FR", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  }
+
   // ---------- Sauvegarde / Restauration ----------
   function save() {
-    const state = {
-      playersText: playersInput.value,
-      k: kInput.value,
-      history
-    };
-    try {
-      localStorage.setItem(LS_KEY, JSON.stringify(state));
-    } catch(e) {
-      console.warn("Sauvegarde non possible (quota ?)", e);
-    }
+    const state = { playersText: playersInput.value, k: kInput.value, history };
+    try { localStorage.setItem(LS_KEY, JSON.stringify(state)); } catch(e) {}
   }
   function load() {
     try {
       const data = localStorage.getItem(LS_KEY);
       if (!data) return;
-      const state = JSON.parse(data);
-      if (state.playersText) playersInput.value = state.playersText;
-      if (state.k) kInput.value = state.k;
-      if (Array.isArray(state.history)) history = state.history;
-    } catch(e) {
-      console.warn("Restauration impossible", e);
-    }
+      const s = JSON.parse(data);
+      if (s.playersText) playersInput.value = s.playersText;
+      if (s.k) kInput.value = s.k;
+      if (Array.isArray(s.history)) history = s.history;
+    } catch(e) {}
   }
   function clearAll() {
     if (!confirm("Tout effacer (historique + sauvegarde) ?")) return;
@@ -142,16 +151,12 @@
     const v = Number(s);
     return isFinite(v) ? v : null;
   }
-  function fmtTs(ts) {
-    return new Date(ts).toLocaleString();
-  }
+  function fmtTs(ts) { return new Date(ts).toLocaleString(); }
 
   // ---------- Tirage équitable ----------
   function fairDraw(k) {
-    const counts = {};
-    players.forEach(p => counts[p]=0);
+    const counts = {}; players.forEach(p => counts[p]=0);
     history.forEach(h => { if (counts.hasOwnProperty(h.joueur)) counts[h.joueur] += 1; });
-    // trie par nb de pronos (asc), puis hasard
     const arr = players.map(p => ({p, c:counts[p], r:Math.random()}));
     arr.sort((a,b)=> (a.c - b.c) || (a.r - b.r));
     return arr.slice(0, k).map(x => x.p);
@@ -159,45 +164,31 @@
 
   // ---------- Rendu ----------
   function recomputeBoard() {
-    const counts = {};
-    const wins = {};
-    const sumWinCote = {};
+    const counts = {}, wins = {}, sumWinCote = {};
     players.forEach(p => { counts[p]=0; wins[p]=0; sumWinCote[p]=0; });
     history.forEach(h => {
       if (!counts.hasOwnProperty(h.joueur)) return;
       counts[h.joueur] += 1;
       const cote = toNumber(h.cote);
       const passed = (String(h.passe||'').toLowerCase()==='oui');
-      if (passed && cote !== null) {
-        wins[h.joueur] += 1;
-        sumWinCote[h.joueur] += cote;
-      }
+      if (passed && cote !== null) { wins[h.joueur]+=1; sumWinCote[h.joueur]+=cote; }
     });
-    // tableau classement
     const rows = players.map(p => {
-      const nb = counts[p]||0;
-      const win = wins[p]||0;
-      const taux = nb>0 ? (win/nb) : 0;
-      const avg = win>0 ? (sumWinCote[p]/win) : 0;
-      const total = sumWinCote[p]||0;
-      return {joueur:p, nb, total, taux, avg};
+      const nb = counts[p]||0, win = wins[p]||0;
+      return { joueur:p, nb, total:sumWinCote[p]||0, taux: nb?win/nb:0, avg: win? (sumWinCote[p]/win):0 };
     });
     boardTBody.innerHTML = '';
     rows.sort((a,b)=> b.total - a.total || b.taux - a.taux);
     rows.forEach(r => {
       const tr = document.createElement('tr');
-      tr.innerHTML = `<td>${r.joueur}</td>
-                      <td>${r.nb}</td>
-                      <td>${r.total.toFixed(2)}</td>
-                      <td>${(r.taux*100).toFixed(1)}%</td>
-                      <td>${r.avg.toFixed(2)}</td>`;
+      tr.innerHTML = `<td>${r.joueur}</td><td>${r.nb}</td><td>${r.total.toFixed(2)}</td><td>${(r.taux*100).toFixed(1)}%</td><td>${r.avg.toFixed(2)}</td>`;
       boardTBody.appendChild(tr);
     });
-    // écart max-min
     const vals = rows.map(r => r.nb);
     gapSpan.textContent = vals.length ? (Math.max(...vals)-Math.min(...vals)) : 0;
   }
 
+  // 🔧 Historique : édition fluide + validation cote + points live (sans re-render complet)
   function renderHistory() {
     historyTBody.innerHTML = '';
     const rows = [...history].sort((a,b)=> b.ts - a.ts).slice(0, 500);
@@ -219,34 +210,59 @@
         <td class="pts-cell"></td>
       `;
 
-      const tdPari  = tr.children[2];
-      const tdCote  = tr.children[3];
+      const tdPari   = tr.children[2];
+      const tdCote   = tr.children[3];
       const selPasse = tr.querySelector('select');
       const ptsCell  = tr.querySelector('.pts-cell');
 
       function updatePointsCell() {
-        const cote = toNumber(h.cote);
-        ptsCell.textContent = (String(h.passe) === 'Oui' && cote !== null) ? cote.toFixed(2) : '0';
-        save();              // sauvegarde locale
-        recomputeBoard();    // met à jour le classement sans re-render l'historique
+        const v = parseCote(h.cote);
+        ptsCell.textContent = (String(h.passe) === 'Oui' && v !== null) ? v.toFixed(2) : '0';
+        save();
+        recomputeBoard();
       }
+
+      // limiter au chiffres + un seul . ou ,
+      tdCote.addEventListener('keydown', (e) => {
+        const allowed = ['Backspace','Delete','ArrowLeft','ArrowRight','ArrowUp','ArrowDown','Home','End','Tab','Enter'];
+        if (allowed.includes(e.key)) return;
+        if (e.key.match(/^[0-9.,]$/)) return;
+        e.preventDefault();
+      });
 
       tdPari.addEventListener('input', () => {
         h.pari = tdPari.innerText.trim();
-        save(); // pas de re-render ici
+        save();
       });
 
       tdCote.addEventListener('input', () => {
-        h.cote = tdCote.innerText.trim();
-        updatePointsCell(); // maj points en live, sans re-render
+        const clean = sanitizeCoteText(tdCote.innerText);
+        if (tdCote.innerText !== clean) {
+          tdCote.innerText = clean;
+          const sel = window.getSelection(); const range = document.createRange();
+          range.selectNodeContents(tdCote); range.collapse(false);
+          sel.removeAllRanges(); sel.addRange(range);
+        }
+        h.cote = clean.trim();
+        updatePointsCell();
+      });
+
+      tdCote.addEventListener('blur', () => {
+        const v = parseCote(h.cote);
+        if (v !== null) {
+          h.cote = formatFR2(v);
+          tdCote.innerText = h.cote;
+          ptsCell.textContent = (String(h.passe) === 'Oui') ? v.toFixed(2) : '0';
+          save(); recomputeBoard();
+        }
       });
 
       selPasse.addEventListener('change', () => {
         h.passe = selPasse.value;
-        updatePointsCell(); // maj points en live, sans re-render
+        updatePointsCell();
       });
 
-      // initialiser la cellule de points
+      // init
       updatePointsCell();
       historyTBody.appendChild(tr);
     });
@@ -259,7 +275,7 @@
     save();
   }
 
-  // ---------- Export / Import CSV (optionnel) ----------
+  // ---------- Export / Import CSV ----------
   function exportCSV() {
     const head = ["DateTime","Joueur","Pari","Cote","Passe"];
     const rows = history.map(h => [new Date(h.ts).toISOString(), h.joueur, h.pari||"", h.cote||"", h.passe||""]);
@@ -278,8 +294,7 @@
       if (!lines.length) return;
       const out = [];
       for (let i=1;i<lines.length;i++) {
-        const row = parseCSVLine(lines[i]);
-        if (!row) continue;
+        const row = parseCSVLine(lines[i]); if (!row) continue;
         const [iso, joueur, pari, cote, passe] = row;
         const ts = Date.parse(iso) || Date.now();
         out.push({ts, joueur, pari, cote, passe});
@@ -327,4 +342,3 @@
 </script>
 </body>
 </html>
-
