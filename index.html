@@ -3,13 +3,13 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>Pronostics — Tirage équitable (avec sauvegarde)</title>
+<title>Pronostics — Tirage équitable (votes non-joueurs)</title>
 <style>
   body { font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; margin: 24px; background:#fafafa; }
   h1 { margin-bottom: 0.2rem; }
   .card { border: 1px solid #e5e7eb; border-radius: 12px; padding: 16px; margin-bottom: 16px; background:white; box-shadow: 0 1px 3px rgba(0,0,0,.06); }
   label { display:block; font-weight: 600; margin-bottom: 6px; }
-  input[type="text"], input[type="number"] { padding: 8px; border: 1px solid #d1d5db; border-radius: 8px; width: 100%; box-sizing: border-box; }
+  input[type="text"], input[type="number"], select { padding: 8px; border: 1px solid #d1d5db; border-radius: 8px; width: 100%; box-sizing: border-box; }
   button { padding: 10px 14px; border: 0; border-radius: 10px; cursor: pointer; background: #111827; color: white; font-weight: 600; }
   button.secondary { background: #374151; }
   button.ghost { background: #eef2ff; color: #111827; }
@@ -24,7 +24,7 @@
 </head>
 <body>
   <h1>🎯 Pronostics — Tirage équitable</h1>
-  <p class="muted">Saisis les joueurs, choisis combien en tirer et clique “Tirer”. L’historique, les points et le classement sont <b>sauvegardés automatiquement</b> sur l’appareil.</p>
+  <p class="muted">Tire 1–3 joueurs (équité), saisis <b>Cote</b> & <b>Passe</b> (Oui = +cote, Non = −cote). Les non-joueurs peuvent voter : 👍 un prono gagnant = +5, 🚫 rien ne passe = +10. Sauvegarde auto incluse.</p>
 
   <div class="card">
     <div class="row">
@@ -35,9 +35,9 @@
       </div>
       <div class="col" style="max-width:180px;">
         <label>Nombre à tirer (1–3)</label>
-        <input id="count" type="number" min="1" max="3" step="1" value="2" />
+        <input id="count" type="number" min="1" max="3" step="1" value="3" />
       </div>
-      <div class="col" style="max-width:420px;">
+      <div class="col" style="max-width:520px;">
         <label>&nbsp;</label>
         <div class="row">
           <button id="drawBtn">Tirer</button>
@@ -61,10 +61,42 @@
   </div>
 
   <div class="card">
-    <h3 style="margin:6px 0;">Historique</h3>
+    <h3 style="margin:6px 0;">Historique des pronos</h3>
     <table id="historyTable">
       <thead>
-        <tr><th>Date/Heure</th><th>Joueur</th><th>Pari</th><th>Cote</th><th>Passe (Oui/Non)</th><th>Points</th></tr>
+        <tr><th>Date/Heure</th><th>Tirage</th><th>Joueur</th><th>Pari</th><th>Cote</th><th>Passe</th><th>Points</th></tr>
+      </thead>
+      <tbody></tbody>
+    </table>
+  </div>
+
+  <div class="card">
+    <h3 style="margin:6px 0;">Votes des non-joueurs</h3>
+    <div class="row">
+      <div class="col">
+        <label>Tirage</label>
+        <select id="voteGid"></select>
+      </div>
+      <div class="col">
+        <label>Votant (non tiré sur ce tirage)</label>
+        <select id="voteVoter"></select>
+      </div>
+      <div class="col">
+        <label>Choix</label>
+        <select id="voteChoice">
+          <option value="">— choisir —</option>
+          <!-- dynamiquement: joueur A / joueur B / joueur C / RIEN -->
+        </select>
+      </div>
+      <div class="col" style="max-width:220px;">
+        <label>&nbsp;</label>
+        <button id="addVoteBtn">Ajouter le vote</button>
+      </div>
+    </div>
+
+    <table id="votesTable" style="margin-top:12px;">
+      <thead>
+        <tr><th>Tirage</th><th>Votant</th><th>Choix</th><th>Points</th></tr>
       </thead>
       <tbody></tbody>
     </table>
@@ -82,7 +114,7 @@
 
 <script>
 (function(){
-  const LS_KEY = "prono_state_v3";
+  const LS_KEY = "prono_state_votes_v1";
   const playersInput = document.getElementById('players');
   const kInput = document.getElementById('count');
   const drawBtn = document.getElementById('drawBtn');
@@ -95,8 +127,17 @@
   const historyTBody = document.querySelector('#historyTable tbody');
   const boardTBody = document.querySelector('#boardTable tbody');
 
+  const voteGid = document.getElementById('voteGid');
+  const voteVoter = document.getElementById('voteVoter');
+  const voteChoice = document.getElementById('voteChoice');
+  const addVoteBtn = document.getElementById('addVoteBtn');
+  const votesTBody = document.querySelector('#votesTable tbody');
+
   let players = [];
-  let history = []; // [{ts, joueur, pari, cote, passe}]
+  // pronos: { ts, gid, joueur, pari, cote, passe }
+  let history = [];
+  // votes: { gid, voter, choice }  (choice = joueur|NONE)
+  let votes = [];
 
   // ---------- Helpers & validation cote ----------
   function sanitizeCoteText(s) {
@@ -116,10 +157,11 @@
   function formatFR2(n) {
     return n.toLocaleString("fr-FR", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
   }
+  function fmtTs(ts) { return new Date(ts).toLocaleString(); }
 
   // ---------- Sauvegarde / Restauration ----------
   function save() {
-    const state = { playersText: playersInput.value, k: kInput.value, history };
+    const state = { playersText: playersInput.value, k: kInput.value, history, votes };
     try { localStorage.setItem(LS_KEY, JSON.stringify(state)); } catch(e) {}
   }
   function load() {
@@ -130,30 +172,22 @@
       if (s.playersText) playersInput.value = s.playersText;
       if (s.k) kInput.value = s.k;
       if (Array.isArray(s.history)) history = s.history;
+      if (Array.isArray(s.votes)) votes = s.votes;
     } catch(e) {}
   }
   function clearAll() {
-    if (!confirm("Tout effacer (historique + sauvegarde) ?")) return;
+    if (!confirm("Tout effacer (historique + votes + sauvegarde) ?")) return;
     history = [];
+    votes = [];
     results.textContent = "";
     localStorage.removeItem(LS_KEY);
     renderAll();
   }
 
-  // ---------- Aides ----------
+  // ---------- Tirages ----------
   function parsePlayers() {
     players = playersInput.value.split(',').map(s=>s.trim()).filter(Boolean);
   }
-  function toNumber(x) {
-    if (x === null || x === undefined) return null;
-    const s = String(x).replace(',', '.').trim();
-    if (!s) return null;
-    const v = Number(s);
-    return isFinite(v) ? v : null;
-  }
-  function fmtTs(ts) { return new Date(ts).toLocaleString(); }
-
-  // ---------- Tirage équitable ----------
   function fairDraw(k) {
     const counts = {}; players.forEach(p => counts[p]=0);
     history.forEach(h => { if (counts.hasOwnProperty(h.joueur)) counts[h.joueur] += 1; });
@@ -161,68 +195,93 @@
     arr.sort((a,b)=> (a.c - b.c) || (a.r - b.r));
     return arr.slice(0, k).map(x => x.p);
   }
-
-  // ---------- Rendu ----------
-  function recomputeBoard() {
-    const counts = {}, wins = {}, sumWinCote = {};
-    players.forEach(p => { counts[p]=0; wins[p]=0; sumWinCote[p]=0; });
+  function getTiragesMap() {
+    // gid -> { ts, joueurs:[...] }
+    const res = {};
     history.forEach(h => {
-      if (!counts.hasOwnProperty(h.joueur)) return;
-      counts[h.joueur] += 1;
-      const cote = toNumber(h.cote);
-      const passed = (String(h.passe||'').toLowerCase()==='oui');
-      if (passed && cote !== null) { wins[h.joueur]+=1; sumWinCote[h.joueur]+=cote; }
+      if (!res[h.gid]) res[h.gid] = { ts: h.ts, joueurs: [] };
+      if (!res[h.gid].joueurs.includes(h.joueur)) res[h.gid].joueurs.push(h.joueur);
     });
-    const rows = players.map(p => {
-      const nb = counts[p]||0, win = wins[p]||0;
-      return { joueur:p, nb, total:sumWinCote[p]||0, taux: nb?win/nb:0, avg: win? (sumWinCote[p]/win):0 };
-    });
-    boardTBody.innerHTML = '';
-    rows.sort((a,b)=> b.total - a.total || b.taux - a.taux);
-    rows.forEach(r => {
-      const tr = document.createElement('tr');
-      tr.innerHTML = `<td>${r.joueur}</td><td>${r.nb}</td><td>${r.total.toFixed(2)}</td><td>${(r.taux*100).toFixed(1)}%</td><td>${r.avg.toFixed(2)}</td>`;
-      boardTBody.appendChild(tr);
-    });
-    const vals = rows.map(r => r.nb);
-    gapSpan.textContent = vals.length ? (Math.max(...vals)-Math.min(...vals)) : 0;
+    return res;
   }
 
-  // 🔧 Historique : édition fluide + validation cote + points live (sans re-render complet)
+  // ---------- Points pronos (+/- cote) ----------
+  function computeProNoPointsArray() {
+    return history.map(h => {
+      const cote = parseCote(h.cote);
+      const p = String(h.passe||'').toLowerCase();
+      if (cote == null) return 0;
+      if (p === 'oui') return +cote;
+      if (p === 'non') return -cote;
+      return 0;
+    });
+  }
+
+  // ---------- Points votes (non-joueurs) ----------
+  function computeVotePointsMap() {
+    // Pour chaque gid : si 0 pronos passent -> votes "NONE" = +10
+    // Sinon, pour chaque vote choice=un joueur qui passe -> +5
+    const passByGid = {};
+    history.forEach(h => {
+      const p = String(h.passe||'').toLowerCase();
+      if (!passByGid[h.gid]) passByGid[h.gid] = { passed: new Set(), total: 0 };
+      if (p === 'oui') passByGid[h.gid].passed.add(h.joueur);
+      passByGid[h.gid].total += 1;
+    });
+
+    const voterPoints = {}; // voter -> points
+    votes.forEach(v => {
+      if (!voterPoints[v.voter]) voterPoints[v.voter] = 0;
+      const info = passByGid[v.gid] || { passed: new Set(), total: 0 };
+      const zeroPassed = info.passed.size === 0 && info.total > 0;
+      if (v.choice === 'NONE') {
+        if (zeroPassed) voterPoints[v.voter] += 10;
+      } else {
+        if (info.passed.has(v.choice)) voterPoints[v.voter] += 5;
+      }
+    });
+    return voterPoints;
+  }
+
+  // ---------- Rendu Historique (édition fluide + validation cote) ----------
   function renderHistory() {
     historyTBody.innerHTML = '';
-    const rows = [...history].sort((a,b)=> b.ts - a.ts).slice(0, 500);
+    const rows = [...history].map((h, idx) => ({...h, _i:idx})).sort((a,b)=> b.ts - a.ts).slice(0, 500);
+
+    const proPoints = computeProNoPointsArray();
 
     rows.forEach(h => {
       const tr = document.createElement('tr');
       tr.innerHTML = `
         <td>${fmtTs(h.ts)}</td>
+        <td>${h.gid}</td>
         <td>${h.joueur}</td>
         <td contenteditable="true">${h.pari || ''}</td>
         <td contenteditable="true">${h.cote || ''}</td>
         <td>
-          <select>
+          <select class="sel-passe">
             <option value="" ${!h.passe ? 'selected' : ''}></option>
             <option value="Oui" ${h.passe === 'Oui' ? 'selected' : ''}>Oui</option>
             <option value="Non" ${h.passe === 'Non' ? 'selected' : ''}>Non</option>
           </select>
         </td>
-        <td class="pts-cell"></td>
+        <td class="pts-cell">${(proPoints[h._i] ?? 0).toFixed(2)}</td>
       `;
 
-      const tdPari   = tr.children[2];
-      const tdCote   = tr.children[3];
-      const selPasse = tr.querySelector('select');
+      const tdPari   = tr.children[3];
+      const tdCote   = tr.children[4];
+      const selPasse = tr.querySelector('.sel-passe');
       const ptsCell  = tr.querySelector('.pts-cell');
 
-      function updatePointsCell() {
-        const v = parseCote(h.cote);
-        ptsCell.textContent = (String(h.passe) === 'Oui' && v !== null) ? v.toFixed(2) : '0';
+      function refreshPointsCell() {
+        const arr = computeProNoPointsArray();
+        ptsCell.textContent = (arr[h._i] ?? 0).toFixed(2);
         save();
         recomputeBoard();
+        renderVotes(); // car les votes dépendent des résultats
       }
 
-      // limiter au chiffres + un seul . ou ,
+      // Validation clavier cote
       tdCote.addEventListener('keydown', (e) => {
         const allowed = ['Backspace','Delete','ArrowLeft','ArrowRight','ArrowUp','ArrowDown','Home','End','Tab','Enter'];
         if (allowed.includes(e.key)) return;
@@ -231,7 +290,7 @@
       });
 
       tdPari.addEventListener('input', () => {
-        h.pari = tdPari.innerText.trim();
+        history[h._i].pari = tdPari.innerText.trim();
         save();
       });
 
@@ -243,63 +302,219 @@
           range.selectNodeContents(tdCote); range.collapse(false);
           sel.removeAllRanges(); sel.addRange(range);
         }
-        h.cote = clean.trim();
-        updatePointsCell();
+        history[h._i].cote = clean.trim();
+        refreshPointsCell();
       });
 
       tdCote.addEventListener('blur', () => {
-        const v = parseCote(h.cote);
+        const v = parseCote(history[h._i].cote);
         if (v !== null) {
-          h.cote = formatFR2(v);
-          tdCote.innerText = h.cote;
-          ptsCell.textContent = (String(h.passe) === 'Oui') ? v.toFixed(2) : '0';
-          save(); recomputeBoard();
+          history[h._i].cote = formatFR2(v);
+          tdCote.innerText = history[h._i].cote;
+          refreshPointsCell();
         }
       });
 
       selPasse.addEventListener('change', () => {
-        h.passe = selPasse.value;
-        updatePointsCell();
+        history[h._i].passe = selPasse.value;
+        refreshPointsCell();
       });
 
-      // init
-      updatePointsCell();
       historyTBody.appendChild(tr);
     });
   }
 
-  function renderAll() {
-    parsePlayers();
-    renderHistory();
-    recomputeBoard();
-    save();
+  // ---------- Rendu Votes ----------
+  function renderVoteSelectors() {
+    // Remplir la liste des tirages (tri par date desc)
+    const tmap = getTiragesMap();
+    const gids = Object.keys(tmap).sort((a,b)=> (tmap[b].ts - tmap[a].ts));
+    voteGid.innerHTML = '';
+    gids.forEach(g => {
+      const opt = document.createElement('option');
+      opt.value = g;
+      opt.textContent = `${g} — [${tmap[g].joueurs.join(' · ')}]`;
+      voteGid.appendChild(opt);
+    });
+    // Préparer votant et choix selon gid sélectionné
+    updateVoterAndChoice();
   }
 
-  // ---------- Export / Import CSV ----------
+  function updateVoterAndChoice() {
+    const g = voteGid.value;
+    const tmap = getTiragesMap();
+    const picked = new Set((tmap[g]?.joueurs)||[]);
+    // Votants possibles = joueurs - picked
+    voteVoter.innerHTML = '';
+    players.filter(p => !picked.has(p)).forEach(p => {
+      const opt = document.createElement('option'); opt.value = p; opt.textContent = p; voteVoter.appendChild(opt);
+    });
+    // Choix possibles = joueurs tirés + "Rien ne passe"
+    voteChoice.innerHTML = '';
+    const ph = document.createElement('option'); ph.value = ''; ph.textContent='— choisir —'; voteChoice.appendChild(ph);
+    (tmap[g]?.joueurs || []).forEach(p => {
+      const opt = document.createElement('option'); opt.value = p; opt.textContent = `👍 ${p}`; voteChoice.appendChild(opt);
+    });
+    const optNone = document.createElement('option'); optNone.value = 'NONE'; optNone.textContent = '🚫 Rien ne passe';
+    voteChoice.appendChild(optNone);
+  }
+
+  function renderVotes() {
+    renderVoteSelectors();
+    // afficher tableau des votes + points
+    votesTBody.innerHTML = '';
+    const voterPts = computeVotePointsMap();
+    votes.forEach(v => {
+      const tr = document.createElement('tr');
+      const pts = (voterPts[v.voter] && 0) ? 0 : 0; // placeholder (on affiche par ligne ci-dessous)
+      let linePts = 0;
+      // recompute per-line quickly:
+      const passByGid = {};
+      history.forEach(h => {
+        const p = String(h.passe||'').toLowerCase();
+        if (!passByGid[h.gid]) passByGid[h.gid] = { passed: new Set(), total: 0 };
+        if (p === 'oui') passByGid[h.gid].passed.add(h.joueur);
+        passByGid[h.gid].total += 1;
+      });
+      const info = passByGid[v.gid] || { passed: new Set(), total: 0 };
+      const zeroPassed = info.passed.size === 0 && info.total > 0;
+      if (v.choice === 'NONE') linePts = zeroPassed ? 10 : 0;
+      else linePts = info.passed.has(v.choice) ? 5 : 0;
+
+      tr.innerHTML = `<td>${v.gid}</td><td>${v.voter}</td><td>${v.choice==='NONE'?'Rien ne passe':v.choice}</td><td>${linePts.toFixed(2)}</td>`;
+      votesTBody.appendChild(tr);
+    });
+  }
+
+  addVoteBtn.addEventListener('click', () => {
+    const g = voteGid.value;
+    const voter = voteVoter.value;
+    const choice = voteChoice.value;
+    if (!g || !voter || !choice) { alert("Sélectionne tirage, votant et choix."); return; }
+    // éviter doublons: un votant = un seul vote par tirage
+    if (votes.find(v => v.gid===g && v.voter===voter)) {
+      alert("Ce votant a déjà voté pour ce tirage."); return;
+    }
+    votes.push({ gid:g, voter, choice });
+    save();
+    renderVotes();
+    recomputeBoard();
+  });
+
+  // ---------- Classement (pronos +/- + votes) ----------
+  function recomputeBoard() {
+    const proPoints = computeProNoPointsArray(); // par ligne de history
+    const voterPtsMap = computeVotePointsMap();  // cumulé par votant
+
+    const counts = {}, wins = {}, sumTotal = {}, sumCoteWin = {};
+    players.forEach(p => { counts[p]=0; wins[p]=0; sumTotal[p]=0; sumCoteWin[p]=0; });
+
+    history.forEach((h, idx) => {
+      if (!counts.hasOwnProperty(h.joueur)) return;
+      counts[h.joueur] += 1;
+      sumTotal[h.joueur] += proPoints[idx] || 0;
+
+      const cote = parseCote(h.cote);
+      if (String(h.passe||'').toLowerCase()==='oui' && cote!==null) {
+        wins[h.joueur] += 1;
+        sumCoteWin[h.joueur] += cote; // moyenne des cotes gagnées (sans votes)
+      }
+    });
+
+    // ajouter points de votes aux totaux
+    Object.keys(voterPtsMap).forEach(voter => {
+      if (!sumTotal.hasOwnProperty(voter)) sumTotal[voter]=0;
+      sumTotal[voter] += voterPtsMap[voter];
+    });
+
+    const rows = players.map(p => {
+      const nb = counts[p]||0;
+      const win = wins[p]||0;
+      const taux = nb>0 ? (win/nb) : 0;
+      const avg = win>0 ? (sumCoteWin[p]/win) : 0;
+      const total = sumTotal[p]||0;
+      return { joueur:p, nb, total, taux, avg };
+    });
+
+    boardTBody.innerHTML = '';
+    rows.sort((a,b)=> b.total - a.total || b.taux - a.taux);
+    rows.forEach(r => {
+      const tr = document.createElement('tr');
+      tr.innerHTML = `<td>${r.joueur}</td><td>${r.nb}</td><td>${r.total.toFixed(2)}</td><td>${(r.taux*100).toFixed(1)}%</td><td>${r.avg.toFixed(2)}</td>`;
+      boardTBody.appendChild(tr);
+    });
+
+    // écart max-min (nombre de pronos joués)
+    const vals = rows.map(r => r.nb);
+    gapSpan.textContent = vals.length ? (Math.max(...vals)-Math.min(...vals)) : 0;
+  }
+
+  // ---------- Export / Import CSV (inclut votes) ----------
   function exportCSV() {
-    const head = ["DateTime","Joueur","Pari","Cote","Passe"];
-    const rows = history.map(h => [new Date(h.ts).toISOString(), h.joueur, h.pari||"", h.cote||"", h.passe||""]);
-    const csv = [head, ...rows].map(r => r.map(x => `"${String(x).replace(/"/g,'""')}"`).join(",")).join("\r\n");
+    // on exporte 2 sections: PRONOS puis VOTES (lisibles dans Excel)
+    const lines = [];
+    lines.push("SECTION,DateTime,TirageID,Joueur,Pari,Cote,Passe,Points/Valeur");
+    const proPoints = computeProNoPointsArray();
+    history.forEach((h,i) => {
+      lines.push(`PRONO,"${new Date(h.ts).toISOString()}","${h.gid}","${(h.joueur||'').replace(/"/g,'""')}","${(h.pari||'').replace(/"/g,'""')}","${(h.cote||'').replace(/"/g,'""')}","${h.passe||''}",${(proPoints[i]||0).toFixed(2)}`);
+    });
+    lines.push(""); // blank
+    lines.push("SECTION,TirageID,Votant,Choix,Points");
+    // recalc points par vote pour export clair
+    const passByGid = {};
+    history.forEach(h => {
+      const p = String(h.passe||'').toLowerCase();
+      if (!passByGid[h.gid]) passByGid[h.gid] = { passed: new Set(), total: 0 };
+      if (p === 'oui') passByGid[h.gid].passed.add(h.joueur);
+      passByGid[h.gid].total += 1;
+    });
+    votes.forEach(v => {
+      const info = passByGid[v.gid] || { passed: new Set(), total: 0 };
+      const zeroPassed = info.passed.size === 0 && info.total > 0;
+      let pts = 0;
+      if (v.choice === 'NONE') pts = zeroPassed ? 10 : 0;
+      else pts = info.passed.has(v.choice) ? 5 : 0;
+      lines.push(`VOTE,"${v.gid}","${(v.voter||'').replace(/"/g,'""')}","${v.choice==='NONE'?'RIEN':(v.choice||'').replace(/"/g,'""')}",${pts.toFixed(2)}`);
+    });
+
+    const csv = lines.join("\r\n");
     const blob = new Blob([csv], {type:"text/csv;charset=utf-8;"});
     const a = document.createElement('a');
     a.href = URL.createObjectURL(blob);
-    a.download = "historique_pronostics.csv";
+    a.download = "pronostics_avec_votes.csv";
     a.click();
   }
   function importCSV(file) {
+    // On accepte un CSV exporté par cet outil ; sinon, mieux vaut repartir sur un nouveau.
     const reader = new FileReader();
     reader.onload = e => {
       const text = e.target.result;
-      const lines = text.split(/\r?\n/).filter(l=>l.trim().length>0);
-      if (!lines.length) return;
-      const out = [];
-      for (let i=1;i<lines.length;i++) {
-        const row = parseCSVLine(lines[i]); if (!row) continue;
-        const [iso, joueur, pari, cote, passe] = row;
-        const ts = Date.parse(iso) || Date.now();
-        out.push({ts, joueur, pari, cote, passe});
+      const rows = text.split(/\r?\n/);
+      const newHist = [];
+      const newVotes = [];
+      let section = "";
+      for (let i=0; i<rows.length; i++) {
+        const line = rows[i].trim();
+        if (!line) continue;
+        if (line.startsWith("SECTION,")) {
+          if (line.includes("DateTime")) { section = "PRONO"; continue; }
+          if (line.includes("TirageID,Votant")) { section = "VOTE"; continue; }
+          continue;
+        }
+        const parts = parseCSVLine(line);
+        if (section === "PRONO") {
+          // PRONO,"iso","gid","joueur","pari","cote","passe",points
+          const iso = parts[1], gid = parts[2], joueur=parts[3], pari=parts[4], cote=parts[5], passe=parts[6];
+          const ts = Date.parse(iso) || Date.now();
+          newHist.push({ts, gid, joueur, pari, cote, passe});
+        } else if (section === "VOTE") {
+          // VOTE,"gid","votant","choix",points
+          const gid = parts[1], voter = parts[2], choix = (parts[3]==='RIEN'?'NONE':parts[3]);
+          newVotes.push({gid, voter, choice: choix});
+        }
       }
-      history = out;
+      history = newHist;
+      votes = newVotes;
       renderAll();
     };
     reader.readAsText(file);
@@ -313,7 +528,7 @@
     });
   }
 
-  // ---------- Événements ----------
+  // ---------- Actions ----------
   drawBtn.addEventListener('click', () => {
     parsePlayers();
     let k = parseInt(kInput.value, 10);
@@ -322,7 +537,8 @@
     const chosen = fairDraw(Math.min(k, players.length));
     results.textContent = chosen.join(' · ');
     const ts = Date.now();
-    chosen.forEach(p => history.push({ts, joueur:p, pari:"", cote:"", passe:""}));
+    const gid = new Date(ts).toISOString().slice(0,10) + " " + ts; // id de tirage
+    chosen.forEach(p => history.push({ts, gid, joueur:p, pari:"", cote:"", passe:""}));
     renderAll();
   });
   resetBtn.addEventListener('click', clearAll);
@@ -335,7 +551,16 @@
     importFile.value = "";
   });
 
-  // ---------- Init ----------
+  // ---------- Rendus principaux ----------
+  function renderAll() {
+    parsePlayers();
+    renderHistory();
+    renderVotes();
+    recomputeBoard();
+    save();
+  }
+
+  // Init
   load();
   renderAll();
 })();
