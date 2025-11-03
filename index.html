@@ -201,27 +201,53 @@
   function renderHistory() {
     historyTBody.innerHTML = '';
     const rows = [...history].sort((a,b)=> b.ts - a.ts).slice(0, 500);
+
     rows.forEach(h => {
       const tr = document.createElement('tr');
       tr.innerHTML = `
         <td>${fmtTs(h.ts)}</td>
         <td>${h.joueur}</td>
-        <td contenteditable="true">${h.pari||''}</td>
-        <td contenteditable="true">${h.cote||''}</td>
+        <td contenteditable="true">${h.pari || ''}</td>
+        <td contenteditable="true">${h.cote || ''}</td>
         <td>
           <select>
-            <option value="" ${!h.passe?'selected':''}></option>
-            <option value="Oui" ${h.passe==='Oui'?'selected':''}>Oui</option>
-            <option value="Non" ${h.passe==='Non'?'selected':''}>Non</option>
+            <option value="" ${!h.passe ? 'selected' : ''}></option>
+            <option value="Oui" ${h.passe === 'Oui' ? 'selected' : ''}>Oui</option>
+            <option value="Non" ${h.passe === 'Non' ? 'selected' : ''}>Non</option>
           </select>
         </td>
-        <td>${(String(h.passe)==='Oui' && toNumber(h.cote)!==null)? toNumber(h.cote).toFixed(2): '0'}</td>`;
-      // listeners
-      const [tdPari, tdCote] = [tr.children[2], tr.children[3]];
+        <td class="pts-cell"></td>
+      `;
+
+      const tdPari  = tr.children[2];
+      const tdCote  = tr.children[3];
       const selPasse = tr.querySelector('select');
-      tdPari.addEventListener('input', ()=>{ h.pari = tdPari.innerText.trim(); save(); renderHistory(); recomputeBoard(); });
-      tdCote.addEventListener('input', ()=>{ h.cote = tdCote.innerText.trim(); save(); renderHistory(); recomputeBoard(); });
-      selPasse.addEventListener('change', ()=>{ h.passe = selPasse.value; save(); renderHistory(); recomputeBoard(); });
+      const ptsCell  = tr.querySelector('.pts-cell');
+
+      function updatePointsCell() {
+        const cote = toNumber(h.cote);
+        ptsCell.textContent = (String(h.passe) === 'Oui' && cote !== null) ? cote.toFixed(2) : '0';
+        save();              // sauvegarde locale
+        recomputeBoard();    // met à jour le classement sans re-render l'historique
+      }
+
+      tdPari.addEventListener('input', () => {
+        h.pari = tdPari.innerText.trim();
+        save(); // pas de re-render ici
+      });
+
+      tdCote.addEventListener('input', () => {
+        h.cote = tdCote.innerText.trim();
+        updatePointsCell(); // maj points en live, sans re-render
+      });
+
+      selPasse.addEventListener('change', () => {
+        h.passe = selPasse.value;
+        updatePointsCell(); // maj points en live, sans re-render
+      });
+
+      // initialiser la cellule de points
+      updatePointsCell();
       historyTBody.appendChild(tr);
     });
   }
@@ -301,3 +327,4 @@
 </script>
 </body>
 </html>
+
